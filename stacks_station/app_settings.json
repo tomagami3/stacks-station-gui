@@ -1,0 +1,17 @@
+{
+  "half_step_counts": 46080,
+  "full_step_counts": 92160,
+  "slow_jog_rpm": 100,
+  "slow_jog_step": 200,
+  "acc": 200,
+  "speed_rpm": 300,
+  "leave_do_on_exit": true,
+  "camera_enabled": false,
+  "half_auto_enabled": false,
+  "semi_tol_counts": 100,
+  "semi_wait_ms": 1200,
+  "semi_timeout1_s": 10,
+  "semi_timeout2_s": 10,
+  "semi_speed_rpm": 300,
+  "station_step_counts": 46080
+}
