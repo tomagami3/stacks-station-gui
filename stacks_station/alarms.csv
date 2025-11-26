@@ -1,0 +1,23 @@
+# Alarm configuration for Stacks Station
+# Format: DOxx,DIxx_when_off,DIxx_when_on,timeout_seconds
+# - DOxx: Output channel to monitor
+# - DIxx_when_off: DI sensor that should be active when DO is OFF (blank = not checked)
+# - DIxx_when_on: DI sensor that should be active when DO is ON (blank = not checked)
+# - timeout_seconds: Time in seconds before alarm is triggered
+#
+# Leave DI columns blank if not checking that state
+# Lines starting with # are comments
+
+# Shaft assembly cylinders
+# DO00 (down): when ON, expect DI05 within 2 seconds
+DO00,,DI05,2.0
+
+# DO01 (up): when OFF, expect DI06 to be inactive within 2 seconds
+DO01,DI06,,2.0
+
+# Grippers - example patterns
+# DO02 (shaft bottom gripper): when ON expect DI07, when OFF expect DI07 inactive
+#DO02,DI07,DI07,1.5
+
+# Add more alarm rules here as needed
+# Format: DOxx,DIxx_off,DIxx_on,timeout
