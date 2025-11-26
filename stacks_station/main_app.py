@@ -12,8 +12,11 @@ from camera_snapshotter import CameraSnapshotter
 from motor_worker import MotorWorker
 from io_worker import IOWorker, get_do_list
 from web_control import start_control_server, get_local_ip
-from ui_tabs import MotorTab, IOAndStacksTab, StacksViewTab, AuxCamTab, SetupTab
+from ui_tabs import MotorTab, IOAndStacksTab, StacksViewTab, AuxCamTab, SetupTab, ShaftAssemblyTab
 from settings_store import SettingsStore
+from shaft_worker import ShaftAssemblyWorker
+from alarm_engine import AlarmEngine
+from constraints_engine import ConstraintsEngine
 
 # Optional camera URL from cameras/stacks.py
 try:
@@ -52,7 +55,12 @@ class App(tk.Tk):
         self.camera_enabled = tk.BooleanVar(value=bool(self.settings.get("camera_enabled", True)))
 
         # ---- workers ----
-        self.iow = IOWorker(Config.IO_HOST, Config.IO_UNIT, poll_hz=Config.IO_POLL_HZ)
+        self.iow = IOWorker(
+            Config.IO_HOST, Config.IO_UNIT, 
+            poll_hz=Config.IO_POLL_HZ,
+            host_card2=getattr(Config, "IO_HOST_CARD2", None),
+            unit_card2=getattr(Config, "IO_UNIT_CARD2", None)
+        )
         try:
             self.iow.connect()
         except Exception as e:
@@ -61,6 +69,21 @@ class App(tk.Tk):
         self.motor_stacks = MotorWorker(Config.SERVO_PORT, Config.SERVO_BAUD, Config.SERVO_STACKS_UNIT, poll_hz=Config.MOTOR_POLL_HZ)
         self.motor_torque = MotorWorker(Config.SERVO_PORT, Config.SERVO_BAUD, Config.SERVO_TORQUE_UNIT, poll_hz=Config.MOTOR_POLL_HZ)
         self.motor_table  = MotorWorker(Config.SERVO_PORT, Config.SERVO_BAUD, Config.SERVO_TABLE_UNIT,  poll_hz=Config.MOTOR_POLL_HZ)
+        
+        # Shaft assembly worker (COM15, 4800-8N1)
+        self.shaft_assembly = ShaftAssemblyWorker(port=Config.SHAFT_PORT, baudrate=Config.SHAFT_BAUD, 
+                                                   unit=Config.SHAFT_UNIT, poll_hz=10)
+        
+        # Alarm engine
+        self.alarm_engine = AlarmEngine()
+        if self.iow.connected:
+            self.alarm_engine.start(self.iow)
+        
+        # Constraints engine
+        self.constraints_engine = ConstraintsEngine()
+        self.constraints_engine.set_io_worker(self.iow)
+        # Pass constraints engine to IO worker
+        self.iow.constraints_engine = self.constraints_engine
 
         # ---- cameras (start only if enabled) ----
         self.cam_main = None
@@ -92,6 +115,12 @@ class App(tk.Tk):
                         command=self._persist_leave_do).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(topbar, text="Enable cameras (fast debug OFF)", variable=self.camera_enabled,
                         command=self._on_toggle_cameras).pack(side="left")
+        
+        # Alarm indicator
+        ttk.Separator(topbar, orient="vertical").pack(side="left", fill="y", padx=10)
+        self.alarm_indicator = ttk.Label(topbar, text="⚠ Alarms: 0", foreground="#666")
+        self.alarm_indicator.pack(side="left")
+        self.alarm_indicator.bind("<Button-1>", lambda e: self._show_alarms())
 
         # ---- tabs ----
         nb = ttk.Notebook(self); nb.pack(fill="both", expand=True)
@@ -100,6 +129,10 @@ class App(tk.Tk):
         self.tab_motor_table  = MotorTab(nb, self.motor_table);  nb.add(self.tab_motor_table,  text="Table Motor (addr 3)")
 
         self.tab_setup = SetupTab(nb, self.settings); nb.add(self.tab_setup, text="Setup")
+        
+        # Shaft assembly tab
+        self.tab_shaft = ShaftAssemblyTab(nb, self.shaft_assembly, self.iow)
+        nb.add(self.tab_shaft, text="Shaft Assembly")
 
         # IO + cameras tabs (canvas will handle None frames gracefully when cameras disabled)
         self.tab_io   = IOAndStacksTab(nb, self.iow, self.shared_pcts, self._snapper_proxy("main"))
@@ -129,6 +162,9 @@ class App(tk.Tk):
                 pass
 
         nb.bind("<<NotebookTabChanged>>", _on_tab_changed)
+        
+        # Start alarm indicator updates
+        self.after(500, self._update_alarm_indicator)
 
         # Connect motors
         for mw in (self.motor_stacks, self.motor_torque, self.motor_table):
@@ -184,6 +220,80 @@ class App(tk.Tk):
     # ----- misc -----
     def _persist_leave_do(self):
         self.settings.set("leave_do_on_exit", bool(self.leave_do_on_exit.get())); self.settings.save()
+    
+    def _update_alarm_indicator(self):
+        """Update the alarm indicator in the top bar."""
+        try:
+            alarms = self.alarm_engine.get_active_alarms()
+            count = len(alarms)
+            if count > 0:
+                self.alarm_indicator.config(text=f"⚠ Alarms: {count}", foreground="red", 
+                                           font=("Arial", 10, "bold"))
+            else:
+                self.alarm_indicator.config(text="⚠ Alarms: 0", foreground="#666",
+                                           font=("Arial", 9))
+        except Exception:
+            pass
+        self.after(500, self._update_alarm_indicator)
+    
+    def _show_alarms(self):
+        """Show a window with active alarms."""
+        alarms = self.alarm_engine.get_active_alarms()
+        
+        if not alarms:
+            messagebox.showinfo("Alarms", "No active alarms.")
+            return
+        
+        # Create alarm window
+        win = tk.Toplevel(self)
+        win.title("Active Alarms")
+        win.geometry("600x400")
+        
+        ttk.Label(win, text=f"Active Alarms ({len(alarms)})", 
+                 font=("Arial", 12, "bold")).pack(padx=10, pady=10)
+        
+        # Alarm list
+        frame = ttk.Frame(win)
+        frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(frame)
+        scrollbar.pack(side="right", fill="y")
+        
+        listbox = tk.Listbox(frame, yscrollcommand=scrollbar.set, font=("Consolas", 9))
+        listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=listbox.yview)
+        
+        for alarm in alarms:
+            elapsed = alarm.elapsed_time()
+            text = f"[{elapsed:.1f}s] {alarm.message}"
+            listbox.insert("end", text)
+        
+        # Buttons
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill="x", padx=10, pady=(0, 10))
+        
+        ttk.Button(btn_frame, text="Clear All", 
+                  command=lambda: self._clear_all_alarms(win)).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Refresh", 
+                  command=lambda: self._refresh_alarms(win, listbox)).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Close", 
+                  command=win.destroy).pack(side="right", padx=5)
+    
+    def _clear_all_alarms(self, window):
+        """Clear all alarms and close window."""
+        self.alarm_engine.clear_all_alarms()
+        window.destroy()
+        messagebox.showinfo("Alarms", "All alarms cleared.")
+    
+    def _refresh_alarms(self, window, listbox):
+        """Refresh the alarm list."""
+        listbox.delete(0, "end")
+        alarms = self.alarm_engine.get_active_alarms()
+        for alarm in alarms:
+            elapsed = alarm.elapsed_time()
+            text = f"[{elapsed:.1f}s] {alarm.message}"
+            listbox.insert("end", text)
 
     def _on_close(self):
         try: self.httpd.shutdown()
@@ -197,6 +307,12 @@ class App(tk.Tk):
         for mw in (self.motor_stacks, self.motor_torque, self.motor_table):
             try: mw.pause_poll()
             except Exception: pass
+        try:
+            self.shaft_assembly.disconnect()
+        except Exception: pass
+        try:
+            self.alarm_engine.stop()
+        except Exception: pass
         try:
             if self.iow.connected and not self.settings.get("leave_do_on_exit", True):
                 for ch, _ in get_do_list():

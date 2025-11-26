@@ -1,5 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import threading
+import time
 
 import numpy as np
 import cv2
@@ -259,6 +261,7 @@ class IOAndStacksTab(ttk.Frame):
         ttk.Label(left, text="Cylinders", font=("Segoe UI", 12, "bold")).pack(anchor="w")
 
         self.btns = {}
+        self.momentary_btns = {}  # Track momentary buttons (DO00, DO01)
 
         def add_group(title, mapping):
             lf = ttk.LabelFrame(left, text=title, padding=6)
@@ -266,11 +269,26 @@ class IOAndStacksTab(ttk.Frame):
             for ch, name in mapping:
                 row = ttk.Frame(lf)
                 row.pack(anchor="w")
-                ttk.Label(row, text=f"DO{ch:02d} – {name}", width=30).pack(side="left")
-                btn = ttk.Checkbutton(row, command=lambda i=ch: self._toggle(i))
-                btn.state(["!alternate"])
-                btn.pack(side="left", padx=8)
-                self.btns[ch] = btn
+                
+                # Special handling for DO00 and DO01: use momentary buttons
+                # DO00 = cylinder down, DO01 = cylinder up (swapped mapping)
+                if ch in (0, 1):
+                    ttk.Label(row, text=f"DO{ch:02d} – {name}", width=30).pack(side="left")
+                    # Use tk.Button (not ttk.Button) for better visual feedback
+                    color = "#4CAF50" if ch == 1 else "#2196F3"  # Green for UP, Blue for DOWN
+                    btn = tk.Button(row, text="HOLD", width=8, bg=color, fg="white",
+                                   font=("Arial", 9, "bold"))
+                    btn.bind("<ButtonPress-1>", lambda e, i=ch: self._momentary_press(i))
+                    btn.bind("<ButtonRelease-1>", lambda e, i=ch: self._momentary_release(i))
+                    btn.pack(side="left", padx=8)
+                    self.momentary_btns[ch] = btn
+                else:
+                    # Regular checkbutton for other outputs
+                    ttk.Label(row, text=f"DO{ch:02d} – {name}", width=30).pack(side="left")
+                    btn = ttk.Checkbutton(row, command=lambda i=ch: self._toggle(i))
+                    btn.state(["!alternate"])
+                    btn.pack(side="left", padx=8)
+                    self.btns[ch] = btn
 
         do_list = get_do_list()
         add_group("All cylinders", do_list)
@@ -306,13 +324,58 @@ class IOAndStacksTab(ttk.Frame):
             val = "selected" in self.btns[ch].state()
             self.io.write_do(ch, val)
             self.status.set(f"Wrote DO{ch:02d} = {int(val)}")
+        except RuntimeError as e:
+            # Constraint violation or other runtime error
+            self.status.set(f"BLOCKED: {e}")
+            messagebox.showwarning("Operation Blocked", str(e))
+            # Revert checkbox state
+            self.btns[ch].state(["!selected"] if val else ["selected"])
+        except Exception as e:
+            messagebox.showerror("IO write", str(e))
+    
+    def _momentary_press(self, ch: int):
+        """Handle momentary button press - turn valve ON."""
+        if not self.io.connected:
+            return
+        try:
+            self.io.write_do(ch, True)
+            self.status.set(f"DO{ch:02d} = ON (valve active)")
+        except RuntimeError as e:
+            # Constraint violation
+            self.status.set(f"BLOCKED: {e}")
+            messagebox.showwarning("Operation Blocked", str(e))
+        except Exception as e:
+            messagebox.showerror("IO write", str(e))
+    
+    def _momentary_release(self, ch: int):
+        """Handle momentary button release - turn valve OFF."""
+        if not self.io.connected:
+            return
+        try:
+            self.io.write_do(ch, False)
+            self.status.set(f"DO{ch:02d} = OFF (valve inactive)")
+        except RuntimeError as e:
+            # Constraint violation
+            self.status.set(f"BLOCKED: {e}")
+            messagebox.showwarning("Operation Blocked", str(e))
         except Exception as e:
             messagebox.showerror("IO write", str(e))
 
     def _tick(self):
+        # Update regular checkbuttons
         for ch, btn in self.btns.items():
             cur = self.io.get_do(ch)
             btn.state(["selected"] if cur else ["!selected"])
+        
+        # Update momentary button visual state
+        for ch, btn in self.momentary_btns.items():
+            cur = self.io.get_do(ch)
+            if cur:
+                btn.config(relief="sunken", bg="#FF5722")  # Pressed appearance, red when active
+            else:
+                # Restore original color
+                color = "#4CAF50" if ch == 1 else "#2196F3"
+                btn.config(relief="raised", bg=color)
 
         pcts = self.perc_ref.get("pcts", [0] * 6)
         for i in range(6):
@@ -501,3 +564,267 @@ class AuxCamTab(ttk.Frame):
             self.canvas.delete("all")
             self.canvas.create_image(cw // 2, ch // 2, image=self._imgtk, anchor="center")
         self.after(1000, self._tick)
+
+
+class ShaftAssemblyTab(ttk.Frame):
+    """
+    Shaft assembly control tab with:
+    - Live position reading from COM15 (Modbus 0x04)
+    - Cylinder controls DO00 (down) and DO01 (up) with momentary buttons
+    - Automatic "Go to position" feature
+    """
+    
+    def __init__(self, master, shaft_worker, io_worker):
+        super().__init__(master)
+        self.shaft = shaft_worker
+        self.io = io_worker
+        
+        # State for go-to-position
+        self._going_to_position = False
+        self._target_position = 0
+        self._go_thread = None
+        
+        # ----- Connection -----
+        frm_conn = ttk.LabelFrame(self, text="Connection (COM15)")
+        frm_conn.pack(fill="x", padx=10, pady=8)
+        
+        ttk.Label(frm_conn, text="Port").grid(row=0, column=0, padx=4, pady=4, sticky="e")
+        self.ent_port = ttk.Entry(frm_conn, width=12)
+        self.ent_port.insert(0, self.shaft.port)
+        self.ent_port.grid(row=0, column=1, padx=4, pady=4)
+        
+        ttk.Label(frm_conn, text="Baud").grid(row=0, column=2, padx=4, pady=4, sticky="e")
+        self.ent_baud = ttk.Entry(frm_conn, width=8)
+        self.ent_baud.insert(0, str(self.shaft.baudrate))
+        self.ent_baud.grid(row=0, column=3, padx=4, pady=4)
+        
+        ttk.Label(frm_conn, text="Unit").grid(row=0, column=4, padx=4, pady=4, sticky="e")
+        self.ent_unit = ttk.Entry(frm_conn, width=6)
+        self.ent_unit.insert(0, str(self.shaft.unit))
+        self.ent_unit.grid(row=0, column=5, padx=4, pady=4)
+        
+        self.btn_connect = ttk.Button(frm_conn, text="Connect", command=self.on_connect, width=12)
+        self.btn_connect.grid(row=0, column=6, padx=6, pady=4)
+        self.btn_disconnect = ttk.Button(frm_conn, text="Disconnect", command=self.on_disconnect, width=12)
+        self.btn_disconnect.grid(row=0, column=7, padx=6, pady=4)
+        
+        # ----- Position Display -----
+        frm_pos = ttk.LabelFrame(self, text="Shaft Position")
+        frm_pos.pack(fill="x", padx=10, pady=8)
+        
+        self.lbl_position = ttk.Label(frm_pos, text="Position: —", font=("Consolas", 18, "bold"))
+        self.lbl_position.pack(pady=10)
+        
+        # ----- Cylinder Controls (Momentary Buttons) -----
+        # NOTE: DO00 and DO01 are SWAPPED per requirements:
+        # - DO00 now controls DOWN valve
+        # - DO01 now controls UP valve
+        frm_cyl = ttk.LabelFrame(self, text="Cylinder Control (Momentary)")
+        frm_cyl.pack(fill="x", padx=10, pady=8)
+        
+        cyl_frame = ttk.Frame(frm_cyl)
+        cyl_frame.pack(pady=10)
+        
+        # UP button (DO01)
+        self.btn_up = tk.Button(cyl_frame, text="▲ UP (DO01)", width=20, height=3,
+                                bg="#4CAF50", fg="white", font=("Arial", 12, "bold"))
+        self.btn_up.grid(row=0, column=0, padx=10, pady=5)
+        self.btn_up.bind("<ButtonPress-1>", lambda e: self._on_valve_press(1))
+        self.btn_up.bind("<ButtonRelease-1>", lambda e: self._on_valve_release(1))
+        
+        # DOWN button (DO00)
+        self.btn_down = tk.Button(cyl_frame, text="▼ DOWN (DO00)", width=20, height=3,
+                                  bg="#2196F3", fg="white", font=("Arial", 12, "bold"))
+        self.btn_down.grid(row=1, column=0, padx=10, pady=5)
+        self.btn_down.bind("<ButtonPress-1>", lambda e: self._on_valve_press(0))
+        self.btn_down.bind("<ButtonRelease-1>", lambda e: self._on_valve_release(0))
+        
+        ttk.Label(frm_cyl, text="Hold button to activate valve. Release to stop.",
+                  foreground="#666").pack(pady=(0, 10))
+        
+        # ----- Go to Position -----
+        frm_goto = ttk.LabelFrame(self, text="Go to Position (Automatic)")
+        frm_goto.pack(fill="x", padx=10, pady=8)
+        
+        row1 = ttk.Frame(frm_goto)
+        row1.pack(pady=8)
+        ttk.Label(row1, text="Target Position:").pack(side="left", padx=4)
+        self.ent_target = ttk.Entry(row1, width=12)
+        self.ent_target.insert(0, "0")
+        self.ent_target.pack(side="left", padx=4)
+        
+        self.btn_goto = ttk.Button(row1, text="Go to Position", command=self.on_go_to_position, width=16)
+        self.btn_goto.pack(side="left", padx=10)
+        
+        self.btn_stop = ttk.Button(row1, text="STOP", command=self.on_stop_goto, width=10)
+        self.btn_stop.pack(side="left", padx=4)
+        self.btn_stop.config(state="disabled")
+        
+        self.lbl_goto_status = ttk.Label(frm_goto, text="Status: Idle", foreground="#666")
+        self.lbl_goto_status.pack(pady=(0, 8))
+        
+        # ----- Status -----
+        self.svar = tk.StringVar(value=self.shaft.status_text)
+        ttk.Label(self, textvariable=self.svar).pack(anchor="w", padx=12, pady=(0, 8))
+        
+        self.after(50, self._tick)
+    
+    # ----- Connection handlers -----
+    def on_connect(self):
+        try:
+            self.shaft.port = self.ent_port.get().strip()
+            self.shaft.baudrate = int(self.ent_baud.get().strip())
+            self.shaft.unit = int(self.ent_unit.get().strip())
+            self.shaft.connect()
+            self.svar.set(self.shaft.status_text)
+        except Exception as e:
+            messagebox.showerror("Shaft connect", str(e))
+            self.svar.set(str(e))
+    
+    def on_disconnect(self):
+        self.shaft.disconnect()
+        self.svar.set(self.shaft.status_text)
+    
+    # ----- Valve control handlers (momentary) -----
+    def _on_valve_press(self, do_channel):
+        """Called when button is pressed - turn valve ON."""
+        if not self.io.connected:
+            return
+        try:
+            self.io.write_do(do_channel, True)
+        except RuntimeError as e:
+            # Constraint violation
+            self.svar.set(f"BLOCKED: {e}")
+            messagebox.showwarning("Operation Blocked", str(e))
+        except Exception as e:
+            messagebox.showerror("IO write", str(e))
+    
+    def _on_valve_release(self, do_channel):
+        """Called when button is released - turn valve OFF."""
+        if not self.io.connected:
+            return
+        try:
+            self.io.write_do(do_channel, False)
+        except RuntimeError as e:
+            # Constraint violation
+            self.svar.set(f"BLOCKED: {e}")
+            messagebox.showwarning("Operation Blocked", str(e))
+        except Exception as e:
+            messagebox.showerror("IO write", str(e))
+    
+    # ----- Go to position handlers -----
+    def on_go_to_position(self):
+        """Start automatic movement to target position."""
+        if self._going_to_position:
+            messagebox.showwarning("Go to position", "Already moving to position!")
+            return
+        
+        if not self.shaft.connected:
+            messagebox.showerror("Go to position", "Shaft assembly not connected!")
+            return
+        
+        if not self.io.connected:
+            messagebox.showerror("Go to position", "IO not connected!")
+            return
+        
+        try:
+            self._target_position = int(self.ent_target.get().strip())
+        except ValueError:
+            messagebox.showerror("Go to position", "Invalid target position!")
+            return
+        
+        self._going_to_position = True
+        self.btn_goto.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        self.btn_up.config(state="disabled")
+        self.btn_down.config(state="disabled")
+        
+        # Start movement in background thread
+        self._go_thread = threading.Thread(target=self._go_to_position_worker, daemon=True)
+        self._go_thread.start()
+    
+    def on_stop_goto(self):
+        """Stop automatic movement."""
+        self._going_to_position = False
+        self._cleanup_goto()
+    
+    def _update_goto_status(self, text, color="blue"):
+        """Helper to safely update status from worker thread."""
+        self.lbl_goto_status.config(text=text, foreground=color)
+    
+    def _go_to_position_worker(self):
+        """Background worker to control valves until target is reached."""
+        
+        try:
+            # Tolerance for position matching (±2 counts)
+            tolerance = 2
+            # Timeout in seconds
+            timeout = 30.0
+            start_time = time.time()
+            
+            while self._going_to_position:
+                # Check timeout
+                if time.time() - start_time > timeout:
+                    self.after(0, self._update_goto_status, "Status: Timeout!", "red")
+                    break
+                
+                # Read current position
+                current_pos = self.shaft.get_position()
+                diff = self._target_position - current_pos
+                
+                # Update status (using helper to avoid lambda closure issues)
+                status_text = f"Status: Moving (current={current_pos}, diff={diff:+d})"
+                self.after(0, self._update_goto_status, status_text, "blue")
+                
+                # Check if we've reached target
+                if abs(diff) <= tolerance:
+                    self.after(0, self._update_goto_status, "Status: Target reached!", "green")
+                    break
+                
+                # Control valves based on position difference
+                # NOTE: Swapped mapping - DO00=down, DO01=up
+                # Use skip_constraints=True for automatic movement to bypass conflicting valve checks
+                if diff > 0:
+                    # Need to go UP - activate DO01 (up valve)
+                    self.io.write_do(1, True, skip_constraints=True)
+                    self.io.write_do(0, False, skip_constraints=True)
+                else:
+                    # Need to go DOWN - activate DO00 (down valve)
+                    self.io.write_do(0, True, skip_constraints=True)
+                    self.io.write_do(1, False, skip_constraints=True)
+                
+                time.sleep(0.1)  # Poll every 100ms
+            
+        except Exception as e:
+            self.after(0, self._update_goto_status, f"Status: Error - {e}", "red")
+        
+        finally:
+            # Always turn off both valves when done (skip constraints to ensure they turn off)
+            try:
+                self.io.write_do(0, False, skip_constraints=True)
+                self.io.write_do(1, False, skip_constraints=True)
+            except Exception:
+                pass
+            
+            self._going_to_position = False
+            self.after(0, self._cleanup_goto)
+    
+    def _cleanup_goto(self):
+        """Re-enable controls after go-to-position completes."""
+        self.btn_goto.config(state="normal")
+        self.btn_stop.config(state="disabled")
+        self.btn_up.config(state="normal")
+        self.btn_down.config(state="normal")
+        if not self._going_to_position and self.lbl_goto_status.cget("text").startswith("Status: Moving"):
+            self.lbl_goto_status.config(text="Status: Stopped", foreground="orange")
+    
+    # ----- UI update -----
+    def _tick(self):
+        if self.shaft.connected:
+            pos = self.shaft.get_position()
+            self.lbl_position.config(text=f"Position: {pos}")
+        else:
+            self.lbl_position.config(text="Position: —")
+        
+        self.svar.set(self.shaft.status_text)
+        self.after(50, self._tick)

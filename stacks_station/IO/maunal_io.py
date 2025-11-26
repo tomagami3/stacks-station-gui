@@ -70,9 +70,12 @@ class MT3AClient:
 
 # ---- Mapping (with your new Torque station) ----
 # Station shaft assembly
+# NOTE: DO00 and DO01 swapped as of requirement change:
+# - DO00 now controls DOWN valve (was UP)
+# - DO01 now controls UP valve (was DOWN)
 SHAFT_ASSEMBLY = [
-    (0, "cylinder up"),
-    (1, "cylinder down"),
+    (0, "cylinder down"),  # Swapped from "cylinder up"
+    (1, "cylinder up"),    # Swapped from "cylinder down"
     (2, "shaft bottom gripper"),
     (3, "shaft radial cyl"),
     (5, "shaft upper gripper"),
