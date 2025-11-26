@@ -16,6 +16,7 @@ from ui_tabs import MotorTab, IOAndStacksTab, StacksViewTab, AuxCamTab, SetupTab
 from settings_store import SettingsStore
 from shaft_worker import ShaftAssemblyWorker
 from alarm_engine import AlarmEngine
+from constraints_engine import ConstraintsEngine
 
 # Optional camera URL from cameras/stacks.py
 try:
@@ -77,6 +78,12 @@ class App(tk.Tk):
         self.alarm_engine = AlarmEngine()
         if self.iow.connected:
             self.alarm_engine.start(self.iow)
+        
+        # Constraints engine
+        self.constraints_engine = ConstraintsEngine()
+        self.constraints_engine.set_io_worker(self.iow)
+        # Pass constraints engine to IO worker
+        self.iow.constraints_engine = self.constraints_engine
 
         # ---- cameras (start only if enabled) ----
         self.cam_main = None

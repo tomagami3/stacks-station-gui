@@ -1,0 +1,29 @@
+# Constraints configuration for Stacks Station
+# Format: DOxx,target_state,condition_signal,condition_state,...
+# - DOxx: target output channel to control
+# - target_state: 0 (OFF) or 1 (ON) - the desired state
+# - Remaining pairs: conditions that must ALL be satisfied
+#   - condition_signal: DOxx or DIxx
+#   - condition_state: 0 (OFF/inactive) or 1 (ON/active)
+#
+# Lines starting with # are comments
+
+# Prevent conflicting cylinder operations (DO00 and DO01 - down and up)
+# Cannot turn ON DO00 (down) if DO01 (up) is already ON
+DO00,1,DO01,0
+
+# Cannot turn ON DO01 (up) if DO00 (down) is already ON
+DO01,1,DO00,0
+
+# Example motor movement safety (customize based on actual DI assignments):
+# Cannot activate table grippers (DO04) unless safety conditions are met
+# Uncomment and adjust based on your actual sensor assignments:
+#DO04,1,DI12,1
+
+# Example: Cannot activate specific outputs unless guards are closed
+# Uncomment and adjust based on your actual configuration:
+#DO02,1,DI13,1
+#DO03,1,DI13,1
+
+# Add more constraint rules here as needed
+# Format: DOxx,state,condition1,state1,condition2,state2,...

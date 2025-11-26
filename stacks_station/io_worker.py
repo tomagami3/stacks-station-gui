@@ -96,6 +96,9 @@ class IOWorker:
         self._run = False
         self._thread = None
         self.lock = threading.Lock()
+        
+        # Constraints engine (set externally)
+        self.constraints_engine = None
 
     def connect(self):
         self.cli.host = self.host
@@ -174,12 +177,27 @@ class IOWorker:
             
             time.sleep(self.poll_period)
 
-    def write_do(self, ch: int, val: bool):
+    def write_do(self, ch: int, val: bool, skip_constraints: bool = False):
         """
         Write digital output.
         - ch 0-15: Card 1
         - ch 16-31: Card 2 (if configured)
+        
+        Args:
+            ch: Channel number (0-31)
+            val: Desired state (True=ON, False=OFF)
+            skip_constraints: If True, skip constraint checking (for internal use)
+        
+        Raises:
+            RuntimeError: If constraints are violated or card not configured
         """
+        # Check constraints before writing (unless skipped)
+        if not skip_constraints and self.constraints_engine:
+            allowed, reason = self.constraints_engine.can_execute_operation(ch, bool(val))
+            if not allowed:
+                raise RuntimeError(f"Operation blocked by constraints: {reason}")
+        
+        # Perform the write
         if ch < 16:
             self.cli.write_do(ch, bool(val))
         elif self.cli_card2:

@@ -322,6 +322,12 @@ class IOAndStacksTab(ttk.Frame):
             val = "selected" in self.btns[ch].state()
             self.io.write_do(ch, val)
             self.status.set(f"Wrote DO{ch:02d} = {int(val)}")
+        except RuntimeError as e:
+            # Constraint violation or other runtime error
+            self.status.set(f"BLOCKED: {e}")
+            messagebox.showwarning("Operation Blocked", str(e))
+            # Revert checkbox state
+            self.btns[ch].state(["!selected"] if val else ["selected"])
         except Exception as e:
             messagebox.showerror("IO write", str(e))
     
@@ -332,6 +338,10 @@ class IOAndStacksTab(ttk.Frame):
         try:
             self.io.write_do(ch, True)
             self.status.set(f"DO{ch:02d} = ON (valve active)")
+        except RuntimeError as e:
+            # Constraint violation
+            self.status.set(f"BLOCKED: {e}")
+            messagebox.showwarning("Operation Blocked", str(e))
         except Exception as e:
             messagebox.showerror("IO write", str(e))
     
@@ -342,6 +352,10 @@ class IOAndStacksTab(ttk.Frame):
         try:
             self.io.write_do(ch, False)
             self.status.set(f"DO{ch:02d} = OFF (valve inactive)")
+        except RuntimeError as e:
+            # Constraint violation
+            self.status.set(f"BLOCKED: {e}")
+            messagebox.showwarning("Operation Blocked", str(e))
         except Exception as e:
             messagebox.showerror("IO write", str(e))
 
@@ -676,6 +690,10 @@ class ShaftAssemblyTab(ttk.Frame):
             return
         try:
             self.io.write_do(do_channel, state)
+        except RuntimeError as e:
+            # Constraint violation
+            self.svar.set(f"BLOCKED: {e}")
+            messagebox.showwarning("Operation Blocked", str(e))
         except Exception as e:
             messagebox.showerror("IO write", str(e))
     
@@ -685,6 +703,10 @@ class ShaftAssemblyTab(ttk.Frame):
             return
         try:
             self.io.write_do(do_channel, state)
+        except RuntimeError as e:
+            # Constraint violation
+            self.svar.set(f"BLOCKED: {e}")
+            messagebox.showwarning("Operation Blocked", str(e))
         except Exception as e:
             messagebox.showerror("IO write", str(e))
     
