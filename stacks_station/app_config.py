@@ -27,6 +27,12 @@ class Config:
     # IO defaults (can be overridden by your IO module at runtime)
     IO_HOST = "192.168.1.12"
     IO_UNIT = 1
+    
+    # Second IO card configuration (optional)
+    # Set IO_UNIT_CARD2 to None to disable second card
+    # If both cards share same network and addressing scheme, set to same as IO_HOST
+    IO_HOST_CARD2 = "192.168.1.12"  # Same network by default
+    IO_UNIT_CARD2 = 2  # Different Modbus unit address (or None to disable)
 
     # Cameras
     CAM_MAIN_URL = 0  # will be overridden from cameras/stacks.py if present

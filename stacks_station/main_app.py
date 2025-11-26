@@ -53,7 +53,12 @@ class App(tk.Tk):
         self.camera_enabled = tk.BooleanVar(value=bool(self.settings.get("camera_enabled", True)))
 
         # ---- workers ----
-        self.iow = IOWorker(Config.IO_HOST, Config.IO_UNIT, poll_hz=Config.IO_POLL_HZ)
+        self.iow = IOWorker(
+            Config.IO_HOST, Config.IO_UNIT, 
+            poll_hz=Config.IO_POLL_HZ,
+            host_card2=getattr(Config, "IO_HOST_CARD2", None),
+            unit_card2=getattr(Config, "IO_UNIT_CARD2", None)
+        )
         try:
             self.iow.connect()
         except Exception as e:
