@@ -5,8 +5,6 @@
 import threading
 import time
 from typing import Optional
-import struct
-import serial
 from pymodbus.client import ModbusSerialClient
 
 

@@ -1,5 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import threading
+import time
 
 import numpy as np
 import cv2
@@ -627,15 +629,15 @@ class ShaftAssemblyTab(ttk.Frame):
         self.btn_up = tk.Button(cyl_frame, text="▲ UP (DO01)", width=20, height=3,
                                 bg="#4CAF50", fg="white", font=("Arial", 12, "bold"))
         self.btn_up.grid(row=0, column=0, padx=10, pady=5)
-        self.btn_up.bind("<ButtonPress-1>", lambda e: self._on_valve_press(1, True))
-        self.btn_up.bind("<ButtonRelease-1>", lambda e: self._on_valve_release(1, False))
+        self.btn_up.bind("<ButtonPress-1>", lambda e: self._on_valve_press(1))
+        self.btn_up.bind("<ButtonRelease-1>", lambda e: self._on_valve_release(1))
         
         # DOWN button (DO00)
         self.btn_down = tk.Button(cyl_frame, text="▼ DOWN (DO00)", width=20, height=3,
                                   bg="#2196F3", fg="white", font=("Arial", 12, "bold"))
         self.btn_down.grid(row=1, column=0, padx=10, pady=5)
-        self.btn_down.bind("<ButtonPress-1>", lambda e: self._on_valve_press(0, True))
-        self.btn_down.bind("<ButtonRelease-1>", lambda e: self._on_valve_release(0, False))
+        self.btn_down.bind("<ButtonPress-1>", lambda e: self._on_valve_press(0))
+        self.btn_down.bind("<ButtonRelease-1>", lambda e: self._on_valve_release(0))
         
         ttk.Label(frm_cyl, text="Hold button to activate valve. Release to stop.",
                   foreground="#666").pack(pady=(0, 10))
@@ -684,12 +686,12 @@ class ShaftAssemblyTab(ttk.Frame):
         self.svar.set(self.shaft.status_text)
     
     # ----- Valve control handlers (momentary) -----
-    def _on_valve_press(self, do_channel, state):
+    def _on_valve_press(self, do_channel):
         """Called when button is pressed - turn valve ON."""
         if not self.io.connected:
             return
         try:
-            self.io.write_do(do_channel, state)
+            self.io.write_do(do_channel, True)
         except RuntimeError as e:
             # Constraint violation
             self.svar.set(f"BLOCKED: {e}")
@@ -697,12 +699,12 @@ class ShaftAssemblyTab(ttk.Frame):
         except Exception as e:
             messagebox.showerror("IO write", str(e))
     
-    def _on_valve_release(self, do_channel, state):
+    def _on_valve_release(self, do_channel):
         """Called when button is released - turn valve OFF."""
         if not self.io.connected:
             return
         try:
-            self.io.write_do(do_channel, state)
+            self.io.write_do(do_channel, False)
         except RuntimeError as e:
             # Constraint violation
             self.svar.set(f"BLOCKED: {e}")
@@ -738,7 +740,6 @@ class ShaftAssemblyTab(ttk.Frame):
         self.btn_down.config(state="disabled")
         
         # Start movement in background thread
-        import threading
         self._go_thread = threading.Thread(target=self._go_to_position_worker, daemon=True)
         self._go_thread.start()
     
@@ -747,9 +748,12 @@ class ShaftAssemblyTab(ttk.Frame):
         self._going_to_position = False
         self._cleanup_goto()
     
+    def _update_goto_status(self, text, color="blue"):
+        """Helper to safely update status from worker thread."""
+        self.lbl_goto_status.config(text=text, foreground=color)
+    
     def _go_to_position_worker(self):
         """Background worker to control valves until target is reached."""
-        import time
         
         try:
             # Tolerance for position matching (±2 counts)
@@ -761,46 +765,44 @@ class ShaftAssemblyTab(ttk.Frame):
             while self._going_to_position:
                 # Check timeout
                 if time.time() - start_time > timeout:
-                    self.after(0, lambda: self.lbl_goto_status.config(
-                        text="Status: Timeout!", foreground="red"))
+                    self.after(0, self._update_goto_status, "Status: Timeout!", "red")
                     break
                 
                 # Read current position
                 current_pos = self.shaft.get_position()
                 diff = self._target_position - current_pos
                 
-                # Update status
-                self.after(0, lambda d=diff, c=current_pos: self.lbl_goto_status.config(
-                    text=f"Status: Moving (current={c}, diff={d:+d})", foreground="blue"))
+                # Update status (using helper to avoid lambda closure issues)
+                status_text = f"Status: Moving (current={current_pos}, diff={diff:+d})"
+                self.after(0, self._update_goto_status, status_text, "blue")
                 
                 # Check if we've reached target
                 if abs(diff) <= tolerance:
-                    self.after(0, lambda: self.lbl_goto_status.config(
-                        text="Status: Target reached!", foreground="green"))
+                    self.after(0, self._update_goto_status, "Status: Target reached!", "green")
                     break
                 
                 # Control valves based on position difference
                 # NOTE: Swapped mapping - DO00=down, DO01=up
+                # Use skip_constraints=True for automatic movement to bypass conflicting valve checks
                 if diff > 0:
                     # Need to go UP - activate DO01 (up valve)
-                    self.io.write_do(1, True)
-                    self.io.write_do(0, False)
+                    self.io.write_do(1, True, skip_constraints=True)
+                    self.io.write_do(0, False, skip_constraints=True)
                 else:
                     # Need to go DOWN - activate DO00 (down valve)
-                    self.io.write_do(0, True)
-                    self.io.write_do(1, False)
+                    self.io.write_do(0, True, skip_constraints=True)
+                    self.io.write_do(1, False, skip_constraints=True)
                 
                 time.sleep(0.1)  # Poll every 100ms
             
         except Exception as e:
-            self.after(0, lambda: self.lbl_goto_status.config(
-                text=f"Status: Error - {e}", foreground="red"))
+            self.after(0, self._update_goto_status, f"Status: Error - {e}", "red")
         
         finally:
-            # Always turn off both valves when done
+            # Always turn off both valves when done (skip constraints to ensure they turn off)
             try:
-                self.io.write_do(0, False)
-                self.io.write_do(1, False)
+                self.io.write_do(0, False, skip_constraints=True)
+                self.io.write_do(1, False, skip_constraints=True)
             except Exception:
                 pass
             
