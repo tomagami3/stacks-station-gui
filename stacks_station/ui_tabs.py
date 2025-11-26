@@ -259,6 +259,7 @@ class IOAndStacksTab(ttk.Frame):
         ttk.Label(left, text="Cylinders", font=("Segoe UI", 12, "bold")).pack(anchor="w")
 
         self.btns = {}
+        self.momentary_btns = {}  # Track momentary buttons (DO00, DO01)
 
         def add_group(title, mapping):
             lf = ttk.LabelFrame(left, text=title, padding=6)
@@ -266,11 +267,26 @@ class IOAndStacksTab(ttk.Frame):
             for ch, name in mapping:
                 row = ttk.Frame(lf)
                 row.pack(anchor="w")
-                ttk.Label(row, text=f"DO{ch:02d} – {name}", width=30).pack(side="left")
-                btn = ttk.Checkbutton(row, command=lambda i=ch: self._toggle(i))
-                btn.state(["!alternate"])
-                btn.pack(side="left", padx=8)
-                self.btns[ch] = btn
+                
+                # Special handling for DO00 and DO01: use momentary buttons
+                # DO00 = cylinder down, DO01 = cylinder up (swapped mapping)
+                if ch in (0, 1):
+                    ttk.Label(row, text=f"DO{ch:02d} – {name}", width=30).pack(side="left")
+                    # Use tk.Button (not ttk.Button) for better visual feedback
+                    color = "#4CAF50" if ch == 1 else "#2196F3"  # Green for UP, Blue for DOWN
+                    btn = tk.Button(row, text="HOLD", width=8, bg=color, fg="white",
+                                   font=("Arial", 9, "bold"))
+                    btn.bind("<ButtonPress-1>", lambda e, i=ch: self._momentary_press(i))
+                    btn.bind("<ButtonRelease-1>", lambda e, i=ch: self._momentary_release(i))
+                    btn.pack(side="left", padx=8)
+                    self.momentary_btns[ch] = btn
+                else:
+                    # Regular checkbutton for other outputs
+                    ttk.Label(row, text=f"DO{ch:02d} – {name}", width=30).pack(side="left")
+                    btn = ttk.Checkbutton(row, command=lambda i=ch: self._toggle(i))
+                    btn.state(["!alternate"])
+                    btn.pack(side="left", padx=8)
+                    self.btns[ch] = btn
 
         do_list = get_do_list()
         add_group("All cylinders", do_list)
@@ -308,11 +324,42 @@ class IOAndStacksTab(ttk.Frame):
             self.status.set(f"Wrote DO{ch:02d} = {int(val)}")
         except Exception as e:
             messagebox.showerror("IO write", str(e))
+    
+    def _momentary_press(self, ch: int):
+        """Handle momentary button press - turn valve ON."""
+        if not self.io.connected:
+            return
+        try:
+            self.io.write_do(ch, True)
+            self.status.set(f"DO{ch:02d} = ON (valve active)")
+        except Exception as e:
+            messagebox.showerror("IO write", str(e))
+    
+    def _momentary_release(self, ch: int):
+        """Handle momentary button release - turn valve OFF."""
+        if not self.io.connected:
+            return
+        try:
+            self.io.write_do(ch, False)
+            self.status.set(f"DO{ch:02d} = OFF (valve inactive)")
+        except Exception as e:
+            messagebox.showerror("IO write", str(e))
 
     def _tick(self):
+        # Update regular checkbuttons
         for ch, btn in self.btns.items():
             cur = self.io.get_do(ch)
             btn.state(["selected"] if cur else ["!selected"])
+        
+        # Update momentary button visual state
+        for ch, btn in self.momentary_btns.items():
+            cur = self.io.get_do(ch)
+            if cur:
+                btn.config(relief="sunken", bg="#FF5722")  # Pressed appearance, red when active
+            else:
+                # Restore original color
+                color = "#4CAF50" if ch == 1 else "#2196F3"
+                btn.config(relief="raised", bg=color)
 
         pcts = self.perc_ref.get("pcts", [0] * 6)
         for i in range(6):
