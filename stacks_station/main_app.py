@@ -12,8 +12,9 @@ from camera_snapshotter import CameraSnapshotter
 from motor_worker import MotorWorker
 from io_worker import IOWorker, get_do_list
 from web_control import start_control_server, get_local_ip
-from ui_tabs import MotorTab, IOAndStacksTab, StacksViewTab, AuxCamTab, SetupTab
+from ui_tabs import MotorTab, IOAndStacksTab, StacksViewTab, AuxCamTab, SetupTab, ShaftAssemblyTab
 from settings_store import SettingsStore
+from shaft_worker import ShaftAssemblyWorker
 
 # Optional camera URL from cameras/stacks.py
 try:
@@ -61,6 +62,10 @@ class App(tk.Tk):
         self.motor_stacks = MotorWorker(Config.SERVO_PORT, Config.SERVO_BAUD, Config.SERVO_STACKS_UNIT, poll_hz=Config.MOTOR_POLL_HZ)
         self.motor_torque = MotorWorker(Config.SERVO_PORT, Config.SERVO_BAUD, Config.SERVO_TORQUE_UNIT, poll_hz=Config.MOTOR_POLL_HZ)
         self.motor_table  = MotorWorker(Config.SERVO_PORT, Config.SERVO_BAUD, Config.SERVO_TABLE_UNIT,  poll_hz=Config.MOTOR_POLL_HZ)
+        
+        # Shaft assembly worker (COM15, 4800-8N1)
+        self.shaft_assembly = ShaftAssemblyWorker(port=Config.SHAFT_PORT, baudrate=Config.SHAFT_BAUD, 
+                                                   unit=Config.SHAFT_UNIT, poll_hz=10)
 
         # ---- cameras (start only if enabled) ----
         self.cam_main = None
@@ -100,6 +105,10 @@ class App(tk.Tk):
         self.tab_motor_table  = MotorTab(nb, self.motor_table);  nb.add(self.tab_motor_table,  text="Table Motor (addr 3)")
 
         self.tab_setup = SetupTab(nb, self.settings); nb.add(self.tab_setup, text="Setup")
+        
+        # Shaft assembly tab
+        self.tab_shaft = ShaftAssemblyTab(nb, self.shaft_assembly, self.iow)
+        nb.add(self.tab_shaft, text="Shaft Assembly")
 
         # IO + cameras tabs (canvas will handle None frames gracefully when cameras disabled)
         self.tab_io   = IOAndStacksTab(nb, self.iow, self.shared_pcts, self._snapper_proxy("main"))
@@ -197,6 +206,9 @@ class App(tk.Tk):
         for mw in (self.motor_stacks, self.motor_torque, self.motor_table):
             try: mw.pause_poll()
             except Exception: pass
+        try:
+            self.shaft_assembly.disconnect()
+        except Exception: pass
         try:
             if self.iow.connected and not self.settings.get("leave_do_on_exit", True):
                 for ch, _ in get_do_list():

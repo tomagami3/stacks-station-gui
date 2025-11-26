@@ -18,6 +18,11 @@ class Config:
 
     # NEW: main table axis
     SERVO_TABLE_UNIT = 3
+    
+    # Shaft assembly (COM15, 4800-8N1, Modbus 0x04)
+    SHAFT_PORT = "COM15"
+    SHAFT_BAUD = 4800
+    SHAFT_UNIT = 1
 
     # IO defaults (can be overridden by your IO module at runtime)
     IO_HOST = "192.168.1.12"
